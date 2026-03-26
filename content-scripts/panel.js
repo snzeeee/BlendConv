@@ -1,7 +1,6 @@
 /**
  * BlendConv — In-page selection panel
  * Shared logic for the sidebar-scanning overlay on ChatGPT and Claude.
- * Injected by chatgpt.js / claude.js after Extractor and StorageManager are available.
  */
 
 window.BlendConvPanel = (function () {
@@ -11,7 +10,7 @@ window.BlendConvPanel = (function () {
   let backdropEl = null;
   let selectedUrls = new Set();
   let sidebarItems = [];
-  let platform = null; // 'chatgpt' or 'claude'
+  let platform = null;
 
   // ─── Toast ───
 
@@ -49,7 +48,6 @@ window.BlendConvPanel = (function () {
         badge.remove();
       }
     }).catch(() => {
-      // Service worker not ready yet, retry later
       setTimeout(updateBadge, 2000);
     });
   }
@@ -65,14 +63,13 @@ window.BlendConvPanel = (function () {
   // ─── Build panel DOM ───
 
   function buildPanel() {
-    // Backdrop
     backdropEl = document.createElement('div');
     backdropEl.id = 'blendconv-panel-backdrop';
     backdropEl.addEventListener('click', closePanel);
 
-    // Panel
     panelEl = document.createElement('div');
     panelEl.id = 'blendconv-panel';
+
     panelEl.innerHTML = `
       <div class="blendconv-panel-header">
         <h2>
@@ -81,7 +78,7 @@ window.BlendConvPanel = (function () {
           </svg>
           BlendConv
         </h2>
-        <button class="blendconv-panel-close">&times;</button>
+        <button class="blendconv-panel-close" title="Close">&times;</button>
       </div>
       <div class="blendconv-panel-progress" style="display:none;">
         <div class="blendconv-panel-progress-bar"></div>
@@ -98,6 +95,7 @@ window.BlendConvPanel = (function () {
       </div>
     `;
 
+    // Event listeners on header close and footer validate
     panelEl.querySelector('.blendconv-panel-close').addEventListener('click', closePanel);
     panelEl.querySelector('.blendconv-panel-validate').addEventListener('click', validateSelection);
 
@@ -113,14 +111,16 @@ window.BlendConvPanel = (function () {
 
     if (!panelEl) buildPanel();
 
-    // Show with animation
+    // Show
     backdropEl.style.display = 'block';
     panelEl.style.display = 'flex';
+
+    // Force reflow then animate
     void panelEl.offsetWidth;
     backdropEl.classList.add('visible');
     panelEl.classList.add('visible');
 
-    // Reset to loading state
+    // Reset body to loading
     const body = panelEl.querySelector('.blendconv-panel-body');
     body.innerHTML = `
       <div class="blendconv-panel-loading">
@@ -131,7 +131,7 @@ window.BlendConvPanel = (function () {
     panelEl.querySelector('.blendconv-panel-progress').style.display = 'none';
     updateFooter();
 
-    // Scan sidebar
+    // Scan (async)
     scanSidebar();
   }
 
@@ -145,23 +145,23 @@ window.BlendConvPanel = (function () {
     }, 250);
   }
 
-  // ─── Scan sidebar ───
+  // ─── Scan sidebar (uses fetch API first, falls back to DOM) ───
 
-  function scanSidebar() {
+  async function scanSidebar() {
     try {
       sidebarItems =
         platform === 'chatgpt'
-          ? window.Extractor.extractChatGPTSidebar()
-          : window.Extractor.extractClaudeSidebar();
+          ? await window.Extractor.fetchChatGPTConversations()
+          : await window.Extractor.fetchClaudeConversations();
 
-      console.log(`[BlendConv] Found ${sidebarItems.length} conversations in sidebar`);
+      console.log(`[BlendConv] Found ${sidebarItems.length} conversations`);
 
       if (sidebarItems.length === 0) {
         showEmptyState();
         return;
       }
 
-      renderItems();
+      await renderItems();
     } catch (err) {
       console.error('[BlendConv] Sidebar scan error:', err);
       showEmptyState();
@@ -172,8 +172,8 @@ window.BlendConvPanel = (function () {
     const body = panelEl.querySelector('.blendconv-panel-body');
     body.innerHTML = `
       <div class="blendconv-panel-empty">
-        <p>No conversations found in the sidebar.</p>
-        <p style="color:#555;font-size:11px;">Make sure the sidebar is visible and has conversations.</p>
+        <p>No conversations found.</p>
+        <p style="color:#555;font-size:11px;">Make sure you are logged in and have conversations.</p>
       </div>
     `;
   }
@@ -185,7 +185,7 @@ window.BlendConvPanel = (function () {
     const listEl = document.createElement('div');
     listEl.className = 'blendconv-panel-list';
 
-    // Get already-captured URLs to mark them
+    // Get already-captured URLs
     const stored = await window.StorageManager.getAll();
     const capturedUrls = new Set(stored.map((c) => c.url));
 
@@ -193,7 +193,7 @@ window.BlendConvPanel = (function () {
       const alreadyCaptured = capturedUrls.has(item.url);
       const row = document.createElement('div');
       row.className = 'blendconv-panel-item';
-      if (alreadyCaptured) row.classList.add('selected');
+      if (alreadyCaptured) row.classList.add('captured');
       row.dataset.url = item.url;
 
       row.innerHTML = `
@@ -208,18 +208,18 @@ window.BlendConvPanel = (function () {
         </div>
       `;
 
-      row.addEventListener('click', () => {
-        if (alreadyCaptured) return; // Don't toggle already-captured items
-        const isSelected = selectedUrls.has(item.url);
-        if (isSelected) {
-          selectedUrls.delete(item.url);
-          row.classList.remove('selected');
-        } else {
-          selectedUrls.add(item.url);
-          row.classList.add('selected');
-        }
-        updateFooter();
-      });
+      if (!alreadyCaptured) {
+        row.addEventListener('click', () => {
+          if (selectedUrls.has(item.url)) {
+            selectedUrls.delete(item.url);
+            row.classList.remove('selected');
+          } else {
+            selectedUrls.add(item.url);
+            row.classList.add('selected');
+          }
+          updateFooter();
+        });
+      }
 
       listEl.appendChild(row);
     });
@@ -233,9 +233,12 @@ window.BlendConvPanel = (function () {
   function updateFooter() {
     if (!panelEl) return;
     const count = selectedUrls.size;
-    panelEl.querySelector('.blendconv-panel-count').textContent =
-      count === 0 ? '0 selected' : `${count} selected`;
-    panelEl.querySelector('.blendconv-panel-validate').disabled = count === 0;
+    const validateBtn = panelEl.querySelector('.blendconv-panel-validate');
+    const countEl = panelEl.querySelector('.blendconv-panel-count');
+
+    countEl.textContent = count === 0 ? '0 selected' : `${count} selected`;
+    validateBtn.disabled = count === 0;
+    validateBtn.textContent = count === 0 ? 'Validate' : `Validate (${count})`;
   }
 
   // ─── Validate: navigate & capture each selected conversation ───
@@ -247,8 +250,8 @@ window.BlendConvPanel = (function () {
     const validateBtn = panelEl.querySelector('.blendconv-panel-validate');
     validateBtn.textContent = 'Capturing...';
     validateBtn.classList.add('processing');
+    validateBtn.disabled = true;
 
-    // Show progress bar
     const progressContainer = panelEl.querySelector('.blendconv-panel-progress');
     const progressBar = panelEl.querySelector('.blendconv-panel-progress-bar');
     progressContainer.style.display = 'block';
@@ -260,33 +263,27 @@ window.BlendConvPanel = (function () {
 
     for (let i = 0; i < urls.length; i++) {
       const url = urls[i];
-      progressBar.style.width = `${((i) / urls.length) * 100}%`;
+      progressBar.style.width = `${(i / urls.length) * 100}%`;
 
       try {
-        // Navigate to the conversation
+        // SPA navigation
         window.location.href = url;
-
-        // Wait for page to settle (SPA navigation)
         await waitForNavigation(url);
         await sleep(1500);
-
-        // Wait for messages to appear
         await waitForMessages();
 
-        // Extract messages
         const messages =
           platform === 'chatgpt'
             ? window.Extractor.extractChatGPT()
             : window.Extractor.extractClaude();
 
         if (messages.length === 0) {
-          console.warn(`[BlendConv] No messages found at ${url}`);
+          console.warn(`[BlendConv] No messages at ${url}`);
           failed++;
           continue;
         }
 
         const title = window.Extractor.extractTitle(platform);
-
         const conversation = {
           id: `${platform}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
           platform,
@@ -301,9 +298,7 @@ window.BlendConvPanel = (function () {
         if (result.ok) {
           captured++;
           console.log(`[BlendConv] Captured: ${title} (${messages.length} msgs)`);
-        } else if (result.reason === 'duplicate') {
-          console.log(`[BlendConv] Skipped duplicate: ${title}`);
-        } else {
+        } else if (result.reason !== 'duplicate') {
           failed++;
         }
       } catch (err) {
@@ -314,14 +309,11 @@ window.BlendConvPanel = (function () {
       progressBar.style.width = `${((i + 1) / urls.length) * 100}%`;
     }
 
-    // Navigate back to original page
+    // Navigate back
     window.location.href = originalUrl;
-
-    // Wait for it to load then show results
     await waitForNavigation(originalUrl);
     await sleep(500);
 
-    // Close panel and show toast
     closePanel();
     updateBadge();
 
@@ -332,10 +324,9 @@ window.BlendConvPanel = (function () {
       setTimeout(() => showToast(`${failed} failed`, true), 2200);
     }
 
-    // Notify background (may fail if service worker is restarting)
     try {
       chrome.runtime.sendMessage({ type: 'conversations_captured', count: captured });
-    } catch {};
+    } catch {}
   }
 
   // ─── Helpers ───
@@ -346,26 +337,19 @@ window.BlendConvPanel = (function () {
 
   function waitForNavigation(targetUrl) {
     return new Promise((resolve) => {
-      // For SPA navigation, watch for URL changes
+      const slug = targetUrl.split('?')[0].split('#')[0].slice(-20);
       const check = () => {
-        if (window.location.href.includes(targetUrl.split('?')[0].split('#')[0].slice(-20))) {
-          resolve();
-          return;
-        }
+        if (window.location.href.includes(slug)) { resolve(); return; }
         setTimeout(check, 200);
       };
 
-      // Also resolve on popstate / load
       const onReady = () => {
         window.removeEventListener('popstate', onReady);
         resolve();
       };
       window.addEventListener('popstate', onReady);
 
-      // Start checking
       setTimeout(check, 300);
-
-      // Timeout
       setTimeout(resolve, 8000);
     });
   }
@@ -377,7 +361,6 @@ window.BlendConvPanel = (function () {
           ? ['article[data-testid^="conversation-turn-"]', '[data-message-author-role]', '[data-message-id]']
           : ['[data-testid="user-message"]', '[data-testid="ai-message"]', '[data-testid^="human-turn"]', '.font-user-message'];
 
-      // Check immediately
       for (const sel of selectors) {
         if (document.querySelector(sel)) { resolve(); return; }
       }

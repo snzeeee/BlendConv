@@ -230,45 +230,99 @@ window.Extractor = {
   },
 
   /**
-   * Extract sidebar conversation list from ChatGPT.
-   * @returns {Array<{title: string, url: string}>}
+   * Fetch conversation list from Claude's internal API.
+   * Falls back to DOM scraping if the API is inaccessible.
+   * @returns {Promise<Array<{title: string, url: string}>>}
    */
-  extractChatGPTSidebar() {
-    const items = [];
-    const selectors = [
-      'nav a[href^="/c/"]',
-      'nav ol li a[href^="/c/"]',
-      'nav [class*="conversation"] a'
-    ];
-
-    for (const selector of selectors) {
-      const links = document.querySelectorAll(selector);
-      if (links.length === 0) continue;
-
-      links.forEach((link) => {
-        try {
-          const title = link.innerText?.trim();
-          const href = link.getAttribute('href');
-          if (title && href && title.length > 0) {
-            const url = href.startsWith('http') ? href : `https://chatgpt.com${href}`;
-            items.push({ title, url });
+  async fetchClaudeConversations() {
+    // Strategy 1: Claude internal API
+    try {
+      // Try to get the organization ID from the page
+      const orgId = await this._getClaudeOrgId();
+      if (orgId) {
+        const res = await fetch(
+          `https://claude.ai/api/organizations/${orgId}/chat_conversations?limit=100`,
+          { credentials: 'include' }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const items = (Array.isArray(data) ? data : data?.conversations || data?.items || [])
+            .filter((c) => c.uuid || c.id)
+            .map((c) => ({
+              title: c.name || c.title || 'Untitled',
+              url: `https://claude.ai/chat/${c.uuid || c.id}`
+            }));
+          if (items.length > 0) {
+            console.log(`[BlendConv] Claude API returned ${items.length} conversations`);
+            return items;
           }
-        } catch (err) {
-          console.warn('[BlendConv] Error parsing ChatGPT sidebar item:', err);
         }
-      });
-
-      if (items.length > 0) break;
+      }
+    } catch (err) {
+      console.warn('[BlendConv] Claude API fetch failed:', err);
     }
 
-    return items;
+    // Strategy 2: Try alternate API paths
+    try {
+      const res = await fetch('https://claude.ai/api/chat_conversations?limit=100', {
+        credentials: 'include'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const items = (Array.isArray(data) ? data : data?.conversations || [])
+          .filter((c) => c.uuid || c.id)
+          .map((c) => ({
+            title: c.name || c.title || 'Untitled',
+            url: `https://claude.ai/chat/${c.uuid || c.id}`
+          }));
+        if (items.length > 0) {
+          console.log(`[BlendConv] Claude API (alt) returned ${items.length} conversations`);
+          return items;
+        }
+      }
+    } catch (err) {
+      console.warn('[BlendConv] Claude alt API failed:', err);
+    }
+
+    // Strategy 3: Fall back to DOM scraping
+    console.log('[BlendConv] Falling back to DOM scraping for Claude sidebar');
+    return this._scrapeClaudeSidebar();
   },
 
   /**
-   * Extract sidebar conversation list from Claude.
-   * @returns {Array<{title: string, url: string}>}
+   * Get Claude organization ID from page state or API.
    */
-  extractClaudeSidebar() {
+  async _getClaudeOrgId() {
+    // Try to find it in the page's script data or meta tags
+    try {
+      const scripts = document.querySelectorAll('script');
+      for (const s of scripts) {
+        const text = s.textContent || '';
+        const match = text.match(/"orgId"\s*:\s*"([a-f0-9-]+)"/);
+        if (match) return match[1];
+      }
+    } catch {}
+
+    // Try the bootstrap endpoint
+    try {
+      const res = await fetch('https://claude.ai/api/organizations', {
+        credentials: 'include'
+      });
+      if (res.ok) {
+        const orgs = await res.json();
+        if (Array.isArray(orgs) && orgs.length > 0) {
+          return orgs[0].uuid || orgs[0].id;
+        }
+      }
+    } catch {}
+
+    return null;
+  },
+
+  /**
+   * Scrape Claude sidebar from DOM (fallback).
+   */
+  _scrapeClaudeSidebar() {
     const items = [];
     const selectors = [
       'nav a[href^="/chat/"]',
@@ -287,11 +341,79 @@ window.Extractor = {
           const href = link.getAttribute('href');
           if (title && href && title.length > 0) {
             const url = href.startsWith('http') ? href : `https://claude.ai${href}`;
-            items.push({ title, url });
+            if (!items.some((i) => i.url === url)) {
+              items.push({ title, url });
+            }
           }
-        } catch (err) {
-          console.warn('[BlendConv] Error parsing Claude sidebar item:', err);
+        } catch {}
+      });
+
+      if (items.length > 0) break;
+    }
+
+    return items;
+  },
+
+  /**
+   * Fetch conversation list from ChatGPT's internal API.
+   * Falls back to DOM scraping if the API is inaccessible.
+   * @returns {Promise<Array<{title: string, url: string}>>}
+   */
+  async fetchChatGPTConversations() {
+    // Strategy 1: ChatGPT backend API
+    try {
+      const res = await fetch(
+        'https://chatgpt.com/backend-api/conversations?offset=0&limit=100&order=updated',
+        { credentials: 'include' }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const items = (data?.items || [])
+          .filter((c) => c.id && c.title)
+          .map((c) => ({
+            title: c.title,
+            url: `https://chatgpt.com/c/${c.id}`
+          }));
+        if (items.length > 0) {
+          console.log(`[BlendConv] ChatGPT API returned ${items.length} conversations`);
+          return items;
         }
+      }
+    } catch (err) {
+      console.warn('[BlendConv] ChatGPT API fetch failed:', err);
+    }
+
+    // Strategy 2: Fall back to DOM scraping
+    console.log('[BlendConv] Falling back to DOM scraping for ChatGPT sidebar');
+    return this._scrapeChatGPTSidebar();
+  },
+
+  /**
+   * Scrape ChatGPT sidebar from DOM (fallback).
+   */
+  _scrapeChatGPTSidebar() {
+    const items = [];
+    const selectors = [
+      'nav a[href^="/c/"]',
+      'nav ol li a[href^="/c/"]',
+      'nav [class*="conversation"] a'
+    ];
+
+    for (const selector of selectors) {
+      const links = document.querySelectorAll(selector);
+      if (links.length === 0) continue;
+
+      links.forEach((link) => {
+        try {
+          const title = link.innerText?.trim();
+          const href = link.getAttribute('href');
+          if (title && href && title.length > 0) {
+            const url = href.startsWith('http') ? href : `https://chatgpt.com${href}`;
+            if (!items.some((i) => i.url === url)) {
+              items.push({ title, url });
+            }
+          }
+        } catch {}
       });
 
       if (items.length > 0) break;

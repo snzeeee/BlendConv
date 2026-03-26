@@ -3,7 +3,7 @@
 #blendconv-toast {
   position: fixed;
   bottom: 84px;
-  left: 24px;
+  right: 24px;
   z-index: 2147483643;
   background: #1a1a2e;
   color: #e0e0e0;
