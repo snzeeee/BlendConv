@@ -6,9 +6,10 @@
 
 // Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'conversation_captured') {
+  if (message.type === 'conversation_captured' || message.type === 'conversations_captured') {
+    const count = message.count || 1;
     chrome.action.setBadgeBackgroundColor({ color: '#6c5ce7' });
-    chrome.action.setBadgeText({ text: '!' });
+    chrome.action.setBadgeText({ text: count > 1 ? String(count) : '!' });
 
     setTimeout(() => {
       chrome.action.setBadgeText({ text: '' });

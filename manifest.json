@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BlendConv",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Capture and merge your AI conversations across ChatGPT and Claude.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
@@ -28,14 +28,30 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["utils/storage.js", "utils/extractor.js", "content-scripts/chatgpt.js"],
-      "css": ["content-scripts/floating-button.css", "content-scripts/toast.css"],
+      "js": [
+        "utils/storage.js",
+        "utils/extractor.js",
+        "content-scripts/panel.js",
+        "content-scripts/chatgpt.js"
+      ],
+      "css": [
+        "content-scripts/floating-button.css",
+        "content-scripts/toast.css"
+      ],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://claude.ai/*"],
-      "js": ["utils/storage.js", "utils/extractor.js", "content-scripts/claude.js"],
-      "css": ["content-scripts/floating-button.css", "content-scripts/toast.css"],
+      "js": [
+        "utils/storage.js",
+        "utils/extractor.js",
+        "content-scripts/panel.js",
+        "content-scripts/claude.js"
+      ],
+      "css": [
+        "content-scripts/floating-button.css",
+        "content-scripts/toast.css"
+      ],
       "run_at": "document_idle"
     }
   ]

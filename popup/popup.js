@@ -1,12 +1,12 @@
 /**
  * BlendConv — Popup controller
- * Manages tabs, conversation list, sidebar browsing, selection, merge, and export.
+ * Shows all captured conversations, allows selection, merge, and export.
+ * No tabs, no sidebar — capture happens via the in-page panel.
  */
 
 (function () {
   'use strict';
 
-  // State
   const selectedIds = new Set();
   let conversations = [];
   let mergedText = '';
@@ -25,25 +25,6 @@
   const openClaudeBtn = document.getElementById('open-claude-btn');
   const clearAllBtn = document.getElementById('clear-all-btn');
   const quotaWarning = document.getElementById('quota-warning');
-  const sidebarListEl = document.getElementById('sidebar-list');
-  const sidebarEmptyEl = document.getElementById('sidebar-empty');
-  const sidebarLoadingEl = document.getElementById('sidebar-loading');
-
-  // ─── Tabs ───
-
-  document.querySelectorAll('.tab').forEach((tab) => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
-      tab.classList.add('active');
-      const target = document.getElementById(`tab-${tab.dataset.tab}`);
-      target.classList.add('active');
-
-      if (tab.dataset.tab === 'browse') {
-        loadSidebar();
-      }
-    });
-  });
 
   // ─── Relative dates ───
 
@@ -64,7 +45,7 @@
     });
   }
 
-  // ─── Render captured conversations ───
+  // ─── Render ───
 
   function render() {
     listEl.innerHTML = '';
@@ -84,7 +65,6 @@
       const isSelected = selectedIds.has(conv.id);
       const item = document.createElement('div');
       item.className = `conversation-item${isSelected ? ' selected' : ''}`;
-      item.dataset.id = conv.id;
 
       const platformInitial = conv.platform === 'chatgpt' ? 'G' : 'C';
       const platformClass = conv.platform === 'chatgpt' ? 'chatgpt' : 'claude';
@@ -99,7 +79,7 @@
         <div class="conv-info">
           <div class="conv-title" title="${escapeAttr(conv.title)}">${escapeHtml(conv.title)}</div>
           <div class="conv-meta">
-            <span>${conv.messageCount} message${conv.messageCount !== 1 ? 's' : ''}</span>
+            <span>${conv.messageCount} msg${conv.messageCount !== 1 ? 's' : ''}</span>
             <span>${formatRelativeDate(conv.capturedAt)}</span>
           </div>
         </div>
@@ -113,7 +93,12 @@
 
       item.addEventListener('click', (e) => {
         if (e.target.closest('.conv-delete')) return;
-        toggleSelection(conv.id);
+        if (selectedIds.has(conv.id)) {
+          selectedIds.delete(conv.id);
+        } else {
+          selectedIds.add(conv.id);
+        }
+        render();
       });
 
       item.querySelector('.conv-delete').addEventListener('click', (e) => {
@@ -124,182 +109,39 @@
       listEl.appendChild(item);
     });
 
-    updateActionBar();
-  }
-
-  // ─── Sidebar browsing ───
-
-  async function loadSidebar() {
-    sidebarListEl.innerHTML = '';
-    sidebarEmptyEl.style.display = 'none';
-    sidebarLoadingEl.style.display = 'flex';
-
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const tab = tabs[0];
-
-      if (!tab?.url) {
-        showSidebarEmpty();
-        return;
-      }
-
-      const isChatGPT = tab.url.includes('chatgpt.com') || tab.url.includes('chat.openai.com');
-      const isClaude = tab.url.includes('claude.ai');
-
-      if (!isChatGPT && !isClaude) {
-        showSidebarEmpty();
-        return;
-      }
-
-      const response = await chrome.tabs.sendMessage(tab.id, { type: 'get_sidebar' });
-
-      sidebarLoadingEl.style.display = 'none';
-
-      if (!response?.success || !response.items || response.items.length === 0) {
-        showSidebarEmpty();
-        return;
-      }
-
-      const platform = isChatGPT ? 'chatgpt' : 'claude';
-      renderSidebarItems(response.items, platform, tab.id);
-    } catch (error) {
-      console.error('[BlendConv] Sidebar load error:', error);
-      showSidebarEmpty();
-    }
-  }
-
-  function showSidebarEmpty() {
-    sidebarLoadingEl.style.display = 'none';
-    sidebarEmptyEl.style.display = 'flex';
-  }
-
-  function renderSidebarItems(items, platform, tabId) {
-    sidebarListEl.innerHTML = '';
-
-    const platformInitial = platform === 'chatgpt' ? 'G' : 'C';
-    const platformClass = platform === 'chatgpt' ? 'chatgpt' : 'claude';
-
-    // Check which URLs are already captured
-    const capturedUrls = new Set(conversations.map((c) => c.url));
-
-    items.forEach((item) => {
-      const row = document.createElement('div');
-      row.className = 'conversation-item';
-
-      const alreadyCaptured = capturedUrls.has(item.url);
-
-      row.innerHTML = `
-        <div class="platform-badge ${platformClass}">${platformInitial}</div>
-        <div class="conv-info">
-          <div class="conv-title" title="${escapeAttr(item.title)}">${escapeHtml(item.title)}</div>
-          <div class="conv-meta">
-            <span>${platform === 'chatgpt' ? 'ChatGPT' : 'Claude'}</span>
-          </div>
-        </div>
-        <button class="conv-capture-btn ${alreadyCaptured ? 'captured' : ''}">
-          ${alreadyCaptured ? '\u2713' : 'Capture'}
-        </button>
-      `;
-
-      const captureBtn = row.querySelector('.conv-capture-btn');
-      if (!alreadyCaptured) {
-        captureBtn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          captureBtn.textContent = '...';
-          captureBtn.disabled = true;
-
-          try {
-            // Navigate the tab to this conversation, capture, then return
-            await chrome.tabs.update(tabId, { url: item.url });
-
-            // Wait for the page to load
-            await new Promise((resolve) => {
-              const listener = (id, changeInfo) => {
-                if (id === tabId && changeInfo.status === 'complete') {
-                  chrome.tabs.onUpdated.removeListener(listener);
-                  resolve();
-                }
-              };
-              chrome.tabs.onUpdated.addListener(listener);
-            });
-
-            // Give the SPA time to render
-            await new Promise((r) => setTimeout(r, 2000));
-
-            // Ask the content script to capture
-            await chrome.tabs.sendMessage(tabId, { type: 'capture_current' });
-
-            captureBtn.textContent = '\u2713';
-            captureBtn.classList.add('captured');
-
-            // Refresh captured list
-            await loadConversations();
-          } catch (err) {
-            console.error('[BlendConv] Sidebar capture error:', err);
-            captureBtn.textContent = 'Error';
-            setTimeout(() => {
-              captureBtn.textContent = 'Retry';
-              captureBtn.disabled = false;
-            }, 2000);
-          }
-        });
-      }
-
-      sidebarListEl.appendChild(row);
-    });
-  }
-
-  // ─── Selection & actions ───
-
-  function toggleSelection(id) {
-    if (selectedIds.has(id)) {
-      selectedIds.delete(id);
-    } else {
-      selectedIds.add(id);
-    }
-    render();
-  }
-
-  function updateActionBar() {
     const count = selectedIds.size;
     selectedCountEl.textContent = `${count} selected`;
     mergeBtn.disabled = count < 2;
   }
 
+  // ─── Actions ───
+
   async function deleteConversation(id) {
     selectedIds.delete(id);
     conversations = conversations.filter((c) => c.id !== id);
-
     try {
       await chrome.storage.local.set({ blendconv_conversations: conversations });
     } catch (error) {
       console.error('[BlendConv] Delete error:', error);
     }
-
     render();
   }
 
   async function clearAll() {
     if (conversations.length === 0) return;
-
     selectedIds.clear();
     conversations = [];
-
     try {
       await chrome.storage.local.remove('blendconv_conversations');
     } catch (error) {
       console.error('[BlendConv] Clear error:', error);
     }
-
     render();
   }
-
-  // ─── Merge & export ───
 
   function performMerge() {
     const selected = conversations.filter((c) => selectedIds.has(c.id));
     if (selected.length < 2) return;
-
     mergedText = window.Merger.merge(selected);
     mergeOutput.textContent = mergedText;
     mergeOverlay.style.display = 'flex';
@@ -335,9 +177,9 @@
   // ─── Utilities ───
 
   function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
   }
 
   function escapeAttr(str) {
@@ -346,59 +188,36 @@
 
   // ─── Init ───
 
-  async function loadConversations() {
+  async function init() {
     try {
       const result = await chrome.storage.local.get('blendconv_conversations');
       conversations = result.blendconv_conversations || [];
     } catch (error) {
-      console.error('[BlendConv] Init error:', error);
       conversations = [];
     }
-
     render();
-  }
 
-  async function checkQuota() {
+    // Quota check
     try {
       const bytes = await chrome.storage.local.getBytesInUse(null);
       const total = chrome.storage.local.QUOTA_BYTES || 10485760;
-      if (bytes / total >= 0.8) {
-        quotaWarning.style.display = 'block';
-      }
-    } catch {
-      // Ignore quota check errors
-    }
-  }
+      if (bytes / total >= 0.8) quotaWarning.style.display = 'block';
+    } catch {}
 
-  async function init() {
-    await loadConversations();
-    checkQuota();
-
-    // Connect to background to clear badge
     chrome.runtime.connect({ name: 'popup' });
   }
 
-  // ─── Event listeners ───
+  // ─── Events ───
 
   mergeBtn.addEventListener('click', performMerge);
   copyBtn.addEventListener('click', copyMergedText);
-  closeMergeBtn.addEventListener('click', () => {
-    mergeOverlay.style.display = 'none';
-  });
+  closeMergeBtn.addEventListener('click', () => { mergeOverlay.style.display = 'none'; });
   clearAllBtn.addEventListener('click', clearAll);
+  openChatGPTBtn.addEventListener('click', () => openAndPaste('https://chatgpt.com/', 'chatgpt'));
+  openClaudeBtn.addEventListener('click', () => openAndPaste('https://claude.ai/new', 'claude'));
 
-  openChatGPTBtn.addEventListener('click', () => {
-    openAndPaste('https://chatgpt.com/', 'chatgpt');
-  });
-
-  openClaudeBtn.addEventListener('click', () => {
-    openAndPaste('https://claude.ai/new', 'claude');
-  });
-
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message.type === 'conversation_captured') {
-      loadConversations();
-    }
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === 'conversation_captured' || msg.type === 'conversations_captured') init();
   });
 
   init();
