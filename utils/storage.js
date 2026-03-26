@@ -1,133 +1,139 @@
 /**
  * BlendConv — Storage utility
  * Handles all chrome.storage operations for captured conversations.
- * Uses a mutex lock to prevent race conditions on concurrent writes.
  */
 
-window.StorageManager = {
-  STORAGE_KEY: 'blendconv_conversations',
-  QUOTA_WARN_THRESHOLD: 0.8,
-  _lockQueue: Promise.resolve(),
+window.StorageManager = (function () {
+  'use strict';
 
-  /**
-   * Acquire a lock before performing a read-modify-write operation.
-   * Queues operations sequentially to prevent lost updates.
-   */
-  _withLock(fn) {
-    this._lockQueue = this._lockQueue
-      .catch(() => {})
-      .then(() => fn());
-    return this._lockQueue;
-  },
+  const STORAGE_KEY = 'blendconv_conversations';
+  const QUOTA_WARN_THRESHOLD = 0.8;
+  const DUPLICATE_WINDOW_MS = 30000;
 
-  /**
-   * Retrieve all stored conversations.
-   * @returns {Promise<Array>} Array of conversation objects
-   */
-  async getAll() {
-    try {
-      const result = await chrome.storage.local.get(this.STORAGE_KEY);
-      return result[this.STORAGE_KEY] || [];
-    } catch (error) {
-      console.error('[BlendConv] Storage read error:', error);
-      return [];
-    }
-  },
+  // Simple async mutex: queue of pending operations
+  let pending = Promise.resolve();
 
-  /**
-   * Check current storage usage against quota.
-   * @returns {Promise<{used: number, total: number, percent: number, warning: boolean}>}
-   */
-  async checkQuota() {
-    try {
-      const bytes = await chrome.storage.local.getBytesInUse(null);
-      const total = chrome.storage.local.QUOTA_BYTES || 10485760; // 10 MB default
-      const percent = bytes / total;
-      return {
-        used: bytes,
-        total,
-        percent,
-        warning: percent >= this.QUOTA_WARN_THRESHOLD
-      };
-    } catch (error) {
-      console.error('[BlendConv] Quota check error:', error);
-      return { used: 0, total: 10485760, percent: 0, warning: false };
-    }
-  },
+  function enqueue(fn) {
+    pending = pending.catch(() => {}).then(fn);
+    return pending;
+  }
 
-  /**
-   * Save a new conversation to storage.
-   * Uses a lock to prevent race conditions from concurrent saves.
-   * @param {Object} conversation - The conversation object to save
-   * @returns {Promise<{saved: boolean, quotaWarning: boolean}>}
-   */
-  save(conversation) {
-    return this._withLock(async () => {
+  return {
+    /**
+     * Retrieve all stored conversations.
+     * @returns {Promise<Array>}
+     */
+    async getAll() {
       try {
-        const conversations = await this.getAll();
+        const result = await chrome.storage.local.get(STORAGE_KEY);
+        return result[STORAGE_KEY] || [];
+      } catch (error) {
+        console.error('[BlendConv] Storage read error:', error);
+        return [];
+      }
+    },
 
-        // Prevent duplicates (30-second window based on URL)
+    /**
+     * Check current storage usage against quota.
+     * @returns {Promise<{percent: number, warning: boolean}>}
+     */
+    async checkQuota() {
+      try {
+        const bytes = await chrome.storage.local.getBytesInUse(null);
+        const total = chrome.storage.local.QUOTA_BYTES || 10485760;
+        const percent = bytes / total;
+        return { percent, warning: percent >= QUOTA_WARN_THRESHOLD };
+      } catch {
+        return { percent: 0, warning: false };
+      }
+    },
+
+    /**
+     * Save a new conversation to storage.
+     * Returns a result object with status and reason for failures.
+     *
+     * @param {Object} conversation
+     * @returns {Promise<{ok: boolean, reason?: string, quotaWarning?: boolean}>}
+     */
+    save(conversation) {
+      return enqueue(async () => {
+        // 1. Read current data
+        let conversations;
+        try {
+          const result = await chrome.storage.local.get(STORAGE_KEY);
+          conversations = result[STORAGE_KEY] || [];
+        } catch (readErr) {
+          console.error('[BlendConv] Read failed:', readErr);
+          return { ok: false, reason: 'storage_read_error' };
+        }
+
+        // 2. Check for duplicates (same URL within 30s window)
         const isDuplicate = conversations.some(
           (c) =>
             c.url === conversation.url &&
-            Math.abs(c.capturedAt - conversation.capturedAt) < 30000
+            Math.abs(c.capturedAt - conversation.capturedAt) < DUPLICATE_WINDOW_MS
         );
-
         if (isDuplicate) {
-          console.warn('[BlendConv] Duplicate conversation, skipping save.');
-          return { saved: false, quotaWarning: false };
+          return { ok: false, reason: 'duplicate' };
         }
 
+        // 3. Write
         conversations.unshift(conversation);
-        await chrome.storage.local.set({ [this.STORAGE_KEY]: conversations });
-
-        // Check quota after save
-        const quota = await this.checkQuota();
-        if (quota.warning) {
-          console.warn(
-            `[BlendConv] Storage at ${Math.round(quota.percent * 100)}% capacity ` +
-            `(${(quota.used / 1048576).toFixed(1)} MB / ${(quota.total / 1048576).toFixed(1)} MB)`
-          );
+        try {
+          await chrome.storage.local.set({ [STORAGE_KEY]: conversations });
+        } catch (writeErr) {
+          console.error('[BlendConv] Write failed:', writeErr);
+          return { ok: false, reason: 'storage_write_error' };
         }
 
-        return { saved: true, quotaWarning: quota.warning };
-      } catch (error) {
-        console.error('[BlendConv] Storage write error:', error);
-        return { saved: false, quotaWarning: false };
-      }
-    });
-  },
+        // 4. Quota check (non-blocking)
+        let quotaWarning = false;
+        try {
+          const q = await this.checkQuota();
+          quotaWarning = q.warning;
+          if (quotaWarning) {
+            console.warn(`[BlendConv] Storage at ${Math.round(q.percent * 100)}%`);
+          }
+        } catch {
+          // ignore
+        }
 
-  /**
-   * Delete a conversation by its ID.
-   * @param {string} id - Conversation ID
-   * @returns {Promise<boolean>} Success status
-   */
-  delete(id) {
-    return this._withLock(async () => {
+        console.log(`[BlendConv] Saved conversation: ${conversation.id} (${conversation.messageCount} msgs)`);
+        return { ok: true, quotaWarning };
+      });
+    },
+
+    /**
+     * Delete a conversation by its ID.
+     * @param {string} id
+     * @returns {Promise<boolean>}
+     */
+    delete(id) {
+      return enqueue(async () => {
+        try {
+          const result = await chrome.storage.local.get(STORAGE_KEY);
+          const conversations = (result[STORAGE_KEY] || []).filter((c) => c.id !== id);
+          await chrome.storage.local.set({ [STORAGE_KEY]: conversations });
+          return true;
+        } catch (error) {
+          console.error('[BlendConv] Delete error:', error);
+          return false;
+        }
+      });
+    },
+
+    /**
+     * Clear all stored conversations.
+     * @returns {Promise<boolean>}
+     */
+    async clearAll() {
       try {
-        const conversations = await this.getAll();
-        const filtered = conversations.filter((c) => c.id !== id);
-        await chrome.storage.local.set({ [this.STORAGE_KEY]: filtered });
+        await chrome.storage.local.remove(STORAGE_KEY);
         return true;
       } catch (error) {
-        console.error('[BlendConv] Storage delete error:', error);
+        console.error('[BlendConv] Clear error:', error);
         return false;
       }
-    });
-  },
-
-  /**
-   * Clear all stored conversations.
-   * @returns {Promise<boolean>} Success status
-   */
-  async clearAll() {
-    try {
-      await chrome.storage.local.remove(this.STORAGE_KEY);
-      return true;
-    } catch (error) {
-      console.error('[BlendConv] Storage clear error:', error);
-      return false;
     }
-  }
-};
+  };
+})();

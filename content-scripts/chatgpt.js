@@ -1,7 +1,6 @@
 /**
  * BlendConv — ChatGPT content script
  * Injects the floating capture button on chatgpt.com and handles conversation extraction.
- * Also exposes sidebar data to the popup via messaging.
  */
 
 (function () {
@@ -12,7 +11,6 @@
 
   /**
    * Wait for conversation content to be loaded in the DOM.
-   * Uses MutationObserver for dynamically rendered content.
    */
   function waitForContent() {
     return new Promise((resolve) => {
@@ -72,12 +70,25 @@
   /** Capture the current conversation. */
   async function captureConversation() {
     const btn = document.getElementById('blendconv-capture-btn');
-    btn.classList.add('capturing');
+    if (btn) btn.classList.add('capturing');
 
     try {
+      // Check that utils are loaded
+      if (!window.Extractor) {
+        showToast('Extension error: reload page', true);
+        console.error('[BlendConv] window.Extractor is undefined');
+        return;
+      }
+      if (!window.StorageManager) {
+        showToast('Extension error: reload page', true);
+        console.error('[BlendConv] window.StorageManager is undefined');
+        return;
+      }
+
       await waitForContent();
 
       const messages = window.Extractor.extractChatGPT();
+      console.log(`[BlendConv] Extracted ${messages.length} messages from ChatGPT`);
 
       if (messages.length === 0) {
         showToast('No messages found', true);
@@ -94,23 +105,28 @@
         capturedAt: Date.now()
       };
 
+      console.log('[BlendConv] Saving conversation:', conversation.id, conversation.title);
       const result = await window.StorageManager.save(conversation);
+      console.log('[BlendConv] Save result:', result);
 
-      if (result.saved) {
+      if (result.ok) {
         showToast('\u2713 Captured');
         chrome.runtime.sendMessage({ type: 'conversation_captured' }).catch(() => {});
 
         if (result.quotaWarning) {
           setTimeout(() => showToast('Storage almost full', true), 2500);
         }
-      } else {
+      } else if (result.reason === 'duplicate') {
         showToast('Already captured', true);
+      } else {
+        showToast('Save failed: ' + (result.reason || 'unknown'), true);
+        console.error('[BlendConv] Save failed:', result.reason);
       }
     } catch (error) {
       console.error('[BlendConv] Capture error:', error);
-      showToast('Capture failed', true);
+      showToast('Capture failed: ' + error.message, true);
     } finally {
-      btn.classList.remove('capturing');
+      if (btn) btn.classList.remove('capturing');
     }
   }
 
@@ -152,7 +168,6 @@
 
     if (message.type === 'paste_text') {
       try {
-        // Find the input field and inject text
         const textarea =
           document.querySelector('#prompt-textarea') ||
           document.querySelector('textarea[data-id="root"]') ||
@@ -165,7 +180,6 @@
             textarea.value = message.text;
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
           } else {
-            // contenteditable div
             textarea.focus();
             textarea.textContent = '';
             document.execCommand('insertText', false, message.text);
@@ -175,7 +189,6 @@
           sendResponse({ success: false, reason: 'Input field not found' });
         }
       } catch (error) {
-        console.error('[BlendConv] Paste error:', error);
         sendResponse({ success: false, reason: error.message });
       }
       return true;
@@ -183,5 +196,6 @@
   });
 
   // Initialize
+  console.log('[BlendConv] ChatGPT content script loaded');
   injectButton();
 })();
