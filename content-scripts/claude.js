@@ -1,6 +1,7 @@
 /**
  * BlendConv — Claude content script
  * Injects the floating capture button on claude.ai and handles conversation extraction.
+ * Also exposes sidebar data to the popup via messaging.
  */
 
 (function () {
@@ -18,6 +19,8 @@
       const selectors = [
         '[data-testid="user-message"]',
         '[data-testid="ai-message"]',
+        '[data-testid^="human-turn"]',
+        '[data-testid^="ai-turn"]',
         '.font-user-message',
         '.font-claude-message'
       ];
@@ -77,7 +80,7 @@
     try {
       await waitForContent();
 
-      const messages = Extractor.extractClaude();
+      const messages = window.Extractor.extractClaude();
 
       if (messages.length === 0) {
         showToast('No messages found', true);
@@ -87,18 +90,22 @@
       const conversation = {
         id: `claude_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
         platform: 'claude',
-        title: Extractor.extractTitle('claude'),
+        title: window.Extractor.extractTitle('claude'),
         url: window.location.href,
         messages,
         messageCount: messages.length,
         capturedAt: Date.now()
       };
 
-      const saved = await StorageManager.save(conversation);
+      const result = await window.StorageManager.save(conversation);
 
-      if (saved) {
+      if (result.saved) {
         showToast('\u2713 Captured');
         chrome.runtime.sendMessage({ type: 'conversation_captured' }).catch(() => {});
+
+        if (result.quotaWarning) {
+          setTimeout(() => showToast('Storage almost full', true), 2500);
+        }
       } else {
         showToast('Already captured', true);
       }
@@ -126,5 +133,51 @@
     document.body.appendChild(btn);
   }
 
+  /** Listen for messages from the popup. */
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'get_sidebar') {
+      try {
+        const items = window.Extractor.extractClaudeSidebar();
+        sendResponse({ success: true, items });
+      } catch (error) {
+        console.error('[BlendConv] Sidebar extraction error:', error);
+        sendResponse({ success: false, items: [] });
+      }
+      return true;
+    }
+
+    if (message.type === 'capture_current') {
+      captureConversation().then(() => {
+        sendResponse({ success: true });
+      });
+      return true;
+    }
+
+    if (message.type === 'paste_text') {
+      try {
+        // Find Claude's input field and inject text
+        const textarea =
+          document.querySelector('[contenteditable="true"].ProseMirror') ||
+          document.querySelector('[contenteditable="true"][data-placeholder]') ||
+          document.querySelector('fieldset [contenteditable="true"]') ||
+          document.querySelector('[contenteditable="true"]');
+
+        if (textarea) {
+          textarea.focus();
+          textarea.textContent = '';
+          document.execCommand('insertText', false, message.text);
+          sendResponse({ success: true });
+        } else {
+          sendResponse({ success: false, reason: 'Input field not found' });
+        }
+      } catch (error) {
+        console.error('[BlendConv] Paste error:', error);
+        sendResponse({ success: false, reason: error.message });
+      }
+      return true;
+    }
+  });
+
+  // Initialize
   injectButton();
 })();

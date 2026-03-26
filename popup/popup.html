@@ -15,7 +15,7 @@
       </svg>
       <h1>BlendConv</h1>
     </div>
-    <button id="clear-all-btn" class="clear-btn" title="Clear all conversations">
+    <button id="clear-all-btn" class="clear-btn" title="Clear all captured conversations">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="3 6 5 6 21 6"/>
         <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -23,18 +23,47 @@
     </button>
   </header>
 
-  <!-- Conversation list -->
-  <div id="conversation-list" class="conversation-list">
-    <!-- Conversations will be injected here -->
+  <!-- Quota warning banner -->
+  <div id="quota-warning" class="quota-warning" style="display: none;">
+    Storage almost full — consider deleting old conversations.
   </div>
 
-  <!-- Empty state -->
-  <div id="empty-state" class="empty-state" style="display: none;">
-    <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#444" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-    </svg>
-    <p>No conversations captured yet.</p>
-    <span>Visit ChatGPT or Claude and click the capture button.</span>
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="captured">Captured</button>
+    <button class="tab" data-tab="browse">Browse</button>
+  </div>
+
+  <!-- Tab: Captured conversations -->
+  <div id="tab-captured" class="tab-content active">
+    <div id="conversation-list" class="conversation-list"></div>
+
+    <div id="empty-state" class="empty-state" style="display: none;">
+      <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#444" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      <p>No conversations captured yet.</p>
+      <span>Visit ChatGPT or Claude and click the capture button,<br>or use the Browse tab to capture from the sidebar.</span>
+    </div>
+  </div>
+
+  <!-- Tab: Browse sidebar conversations -->
+  <div id="tab-browse" class="tab-content" style="display: none;">
+    <div id="sidebar-list" class="conversation-list"></div>
+
+    <div id="sidebar-empty" class="empty-state" style="display: none;">
+      <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#444" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <p>No conversations found.</p>
+      <span>Open ChatGPT or Claude in a tab first,<br>then come back here.</span>
+    </div>
+
+    <div id="sidebar-loading" class="empty-state">
+      <div class="spinner"></div>
+      <p>Scanning sidebar...</p>
+    </div>
   </div>
 
   <!-- Action bar -->

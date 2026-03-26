@@ -1,6 +1,7 @@
 /**
  * BlendConv — ChatGPT content script
  * Injects the floating capture button on chatgpt.com and handles conversation extraction.
+ * Also exposes sidebar data to the popup via messaging.
  */
 
 (function () {
@@ -16,12 +17,11 @@
   function waitForContent() {
     return new Promise((resolve) => {
       const selectors = [
+        'article[data-testid^="conversation-turn-"]',
         '[data-message-author-role]',
-        'div.agent-turn',
-        'article[data-testid^="conversation-turn"]'
+        '[data-message-id]'
       ];
 
-      // Check if content already exists
       for (const sel of selectors) {
         if (document.querySelector(sel)) {
           resolve();
@@ -29,7 +29,6 @@
         }
       }
 
-      // Observe DOM for dynamic content loading
       const observer = new MutationObserver((_, obs) => {
         for (const sel of selectors) {
           if (document.querySelector(sel)) {
@@ -42,7 +41,6 @@
 
       observer.observe(document.body, { childList: true, subtree: true });
 
-      // Timeout after 10 seconds
       setTimeout(() => {
         observer.disconnect();
         resolve();
@@ -63,7 +61,6 @@
     toast.textContent = message;
     toast.className = isError ? 'error' : '';
 
-    // Trigger reflow for animation
     void toast.offsetWidth;
     toast.classList.add('visible');
 
@@ -80,7 +77,7 @@
     try {
       await waitForContent();
 
-      const messages = Extractor.extractChatGPT();
+      const messages = window.Extractor.extractChatGPT();
 
       if (messages.length === 0) {
         showToast('No messages found', true);
@@ -90,19 +87,22 @@
       const conversation = {
         id: `chatgpt_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
         platform: 'chatgpt',
-        title: Extractor.extractTitle('chatgpt'),
+        title: window.Extractor.extractTitle('chatgpt'),
         url: window.location.href,
         messages,
         messageCount: messages.length,
         capturedAt: Date.now()
       };
 
-      const saved = await StorageManager.save(conversation);
+      const result = await window.StorageManager.save(conversation);
 
-      if (saved) {
+      if (result.saved) {
         showToast('\u2713 Captured');
-        // Notify the popup if open
         chrome.runtime.sendMessage({ type: 'conversation_captured' }).catch(() => {});
+
+        if (result.quotaWarning) {
+          setTimeout(() => showToast('Storage almost full', true), 2500);
+        }
       } else {
         showToast('Already captured', true);
       }
@@ -129,6 +129,58 @@
     btn.addEventListener('click', captureConversation);
     document.body.appendChild(btn);
   }
+
+  /** Listen for messages from the popup. */
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'get_sidebar') {
+      try {
+        const items = window.Extractor.extractChatGPTSidebar();
+        sendResponse({ success: true, items });
+      } catch (error) {
+        console.error('[BlendConv] Sidebar extraction error:', error);
+        sendResponse({ success: false, items: [] });
+      }
+      return true;
+    }
+
+    if (message.type === 'capture_current') {
+      captureConversation().then(() => {
+        sendResponse({ success: true });
+      });
+      return true;
+    }
+
+    if (message.type === 'paste_text') {
+      try {
+        // Find the input field and inject text
+        const textarea =
+          document.querySelector('#prompt-textarea') ||
+          document.querySelector('textarea[data-id="root"]') ||
+          document.querySelector('[contenteditable="true"][data-placeholder]') ||
+          document.querySelector('textarea') ||
+          document.querySelector('[contenteditable="true"]');
+
+        if (textarea) {
+          if (textarea.tagName === 'TEXTAREA') {
+            textarea.value = message.text;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          } else {
+            // contenteditable div
+            textarea.focus();
+            textarea.textContent = '';
+            document.execCommand('insertText', false, message.text);
+          }
+          sendResponse({ success: true });
+        } else {
+          sendResponse({ success: false, reason: 'Input field not found' });
+        }
+      } catch (error) {
+        console.error('[BlendConv] Paste error:', error);
+        sendResponse({ success: false, reason: error.message });
+      }
+      return true;
+    }
+  });
 
   // Initialize
   injectButton();
