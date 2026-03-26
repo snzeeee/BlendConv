@@ -241,14 +241,16 @@ window.BlendConvPanel = (function () {
     validateBtn.textContent = count === 0 ? 'Validate' : `Validate (${count})`;
   }
 
-  // ─── Validate: navigate & capture each selected conversation ───
+  // ─── Validate: fetch messages via API for each selected conversation ───
 
   async function validateSelection() {
     const urls = [...selectedUrls];
     if (urls.length === 0) return;
 
+    console.log(`[BlendConv] Validate: capturing ${urls.length} conversations via API`);
+
     const validateBtn = panelEl.querySelector('.blendconv-panel-validate');
-    validateBtn.textContent = 'Capturing...';
+    const countEl = panelEl.querySelector('.blendconv-panel-count');
     validateBtn.classList.add('processing');
     validateBtn.disabled = true;
 
@@ -257,48 +259,65 @@ window.BlendConvPanel = (function () {
     progressContainer.style.display = 'block';
     progressBar.style.width = '0%';
 
-    const originalUrl = window.location.href;
     let captured = 0;
     let failed = 0;
 
     for (let i = 0; i < urls.length; i++) {
       const url = urls[i];
+      const itemTitle = sidebarItems.find((it) => it.url === url)?.title || 'conversation';
+
+      // Update button text with progress
+      validateBtn.textContent = `Capturing ${i + 1}/${urls.length}...`;
+      countEl.textContent = `${itemTitle}`;
       progressBar.style.width = `${(i / urls.length) * 100}%`;
 
+      console.log(`[BlendConv] [${i + 1}/${urls.length}] Fetching: ${url}`);
+
       try {
-        // SPA navigation
-        window.location.href = url;
-        await waitForNavigation(url);
-        await sleep(1500);
-        await waitForMessages();
-
-        const messages =
+        // Fetch messages via API (no navigation needed)
+        const data =
           platform === 'chatgpt'
-            ? window.Extractor.extractChatGPT()
-            : window.Extractor.extractClaude();
+            ? await window.Extractor.fetchChatGPTMessages(url)
+            : await window.Extractor.fetchClaudeMessages(url);
 
-        if (messages.length === 0) {
-          console.warn(`[BlendConv] No messages at ${url}`);
+        console.log(`[BlendConv] Got ${data.messages.length} messages for "${data.title}"`);
+
+        if (data.messages.length === 0) {
+          console.warn(`[BlendConv] No messages in conversation: ${url}`);
           failed++;
           continue;
         }
 
-        const title = window.Extractor.extractTitle(platform);
+        // Build conversation object
         const conversation = {
           id: `${platform}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
           platform,
-          title,
-          url: window.location.href,
-          messages,
-          messageCount: messages.length,
+          title: data.title,
+          url,
+          messages: data.messages,
+          messageCount: data.messages.length,
           capturedAt: Date.now()
         };
 
+        // Save via service worker
+        console.log(`[BlendConv] Saving "${data.title}" (${data.messages.length} msgs)...`);
         const result = await window.StorageManager.save(conversation);
+        console.log(`[BlendConv] Save result:`, result);
+
         if (result.ok) {
           captured++;
-          console.log(`[BlendConv] Captured: ${title} (${messages.length} msgs)`);
-        } else if (result.reason !== 'duplicate') {
+          // Mark item as captured in the panel
+          const row = panelEl.querySelector(`.blendconv-panel-item[data-url="${CSS.escape(url)}"]`);
+          if (row) {
+            row.classList.remove('selected');
+            row.classList.add('captured');
+            const meta = row.querySelector('.blendconv-panel-meta');
+            if (meta) meta.textContent = 'Captured';
+          }
+        } else if (result.reason === 'duplicate') {
+          console.log(`[BlendConv] Skipped duplicate: ${data.title}`);
+        } else {
+          console.error(`[BlendConv] Save failed:`, result.reason);
           failed++;
         }
       } catch (err) {
@@ -309,14 +328,13 @@ window.BlendConvPanel = (function () {
       progressBar.style.width = `${((i + 1) / urls.length) * 100}%`;
     }
 
-    // Navigate back
-    window.location.href = originalUrl;
-    await waitForNavigation(originalUrl);
-    await sleep(500);
+    console.log(`[BlendConv] Done: ${captured} captured, ${failed} failed`);
 
+    // Close panel
     closePanel();
     updateBadge();
 
+    // Toast results
     if (captured > 0) {
       showToast(`${captured} conversation${captured > 1 ? 's' : ''} captured`);
     }
@@ -327,57 +345,6 @@ window.BlendConvPanel = (function () {
     try {
       chrome.runtime.sendMessage({ type: 'conversations_captured', count: captured });
     } catch {}
-  }
-
-  // ─── Helpers ───
-
-  function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
-
-  function waitForNavigation(targetUrl) {
-    return new Promise((resolve) => {
-      const slug = targetUrl.split('?')[0].split('#')[0].slice(-20);
-      const check = () => {
-        if (window.location.href.includes(slug)) { resolve(); return; }
-        setTimeout(check, 200);
-      };
-
-      const onReady = () => {
-        window.removeEventListener('popstate', onReady);
-        resolve();
-      };
-      window.addEventListener('popstate', onReady);
-
-      setTimeout(check, 300);
-      setTimeout(resolve, 8000);
-    });
-  }
-
-  function waitForMessages() {
-    return new Promise((resolve) => {
-      const selectors =
-        platform === 'chatgpt'
-          ? ['article[data-testid^="conversation-turn-"]', '[data-message-author-role]', '[data-message-id]']
-          : ['[data-testid="user-message"]', '[data-testid="ai-message"]', '[data-testid^="human-turn"]', '.font-user-message'];
-
-      for (const sel of selectors) {
-        if (document.querySelector(sel)) { resolve(); return; }
-      }
-
-      const observer = new MutationObserver((_, obs) => {
-        for (const sel of selectors) {
-          if (document.querySelector(sel)) {
-            obs.disconnect();
-            resolve();
-            return;
-          }
-        }
-      });
-
-      observer.observe(document.body, { childList: true, subtree: true });
-      setTimeout(() => { observer.disconnect(); resolve(); }, 8000);
-    });
   }
 
   // ─── Public API ───

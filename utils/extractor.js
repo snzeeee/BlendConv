@@ -229,6 +229,156 @@ window.Extractor = {
     return `${platform === 'chatgpt' ? 'ChatGPT' : 'Claude'} conversation`;
   },
 
+  // ═══════════════════════════════════════════════════════════════
+  //  Fetch MESSAGES for a single conversation via API
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Fetch full messages for a Claude conversation via API.
+   * @param {string} conversationUrl - e.g. "https://claude.ai/chat/abc-123"
+   * @returns {Promise<{title: string, messages: Array<{role: string, content: string}>}>}
+   */
+  async fetchClaudeMessages(conversationUrl) {
+    const convId = conversationUrl.split('/chat/')[1]?.split('?')[0];
+    if (!convId) throw new Error('Cannot parse conversation ID from URL: ' + conversationUrl);
+
+    console.log(`[BlendConv] Fetching Claude conversation ${convId}...`);
+
+    const orgId = await this._getClaudeOrgId();
+
+    // Try with orgId first, then without
+    const endpoints = orgId
+      ? [
+          `https://claude.ai/api/organizations/${orgId}/chat_conversations/${convId}`,
+          `https://claude.ai/api/chat_conversations/${convId}`
+        ]
+      : [`https://claude.ai/api/chat_conversations/${convId}`];
+
+    for (const endpoint of endpoints) {
+      try {
+        const res = await fetch(endpoint, { credentials: 'include' });
+        if (!res.ok) {
+          console.warn(`[BlendConv] Claude API ${res.status} for ${endpoint}`);
+          continue;
+        }
+
+        const data = await res.json();
+        console.log(`[BlendConv] Claude API response keys:`, Object.keys(data));
+
+        const title = data.name || data.title || 'Untitled';
+        const messages = [];
+
+        // Claude API returns chat_messages array
+        const rawMessages = data.chat_messages || data.messages || [];
+        for (const msg of rawMessages) {
+          const role = msg.sender === 'human' || msg.role === 'user' ? 'user' : 'assistant';
+
+          // Content can be a string, an array of content blocks, or nested
+          let content = '';
+          if (typeof msg.text === 'string') {
+            content = msg.text;
+          } else if (typeof msg.content === 'string') {
+            content = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            content = msg.content
+              .map((block) => {
+                if (typeof block === 'string') return block;
+                if (block.type === 'text') return block.text || '';
+                return '';
+              })
+              .join('\n')
+              .trim();
+          }
+
+          if (content.length > 0) {
+            messages.push({ role, content });
+          }
+        }
+
+        console.log(`[BlendConv] Parsed ${messages.length} messages for "${title}"`);
+        return { title, messages };
+      } catch (err) {
+        console.warn(`[BlendConv] Claude fetch error for ${endpoint}:`, err);
+      }
+    }
+
+    throw new Error('All Claude API endpoints failed for conversation ' + convId);
+  },
+
+  /**
+   * Fetch full messages for a ChatGPT conversation via API.
+   * @param {string} conversationUrl - e.g. "https://chatgpt.com/c/abc-123"
+   * @returns {Promise<{title: string, messages: Array<{role: string, content: string}>}>}
+   */
+  async fetchChatGPTMessages(conversationUrl) {
+    const convId = conversationUrl.split('/c/')[1]?.split('?')[0];
+    if (!convId) throw new Error('Cannot parse conversation ID from URL: ' + conversationUrl);
+
+    console.log(`[BlendConv] Fetching ChatGPT conversation ${convId}...`);
+
+    const res = await fetch(
+      `https://chatgpt.com/backend-api/conversation/${convId}`,
+      { credentials: 'include' }
+    );
+
+    if (!res.ok) {
+      throw new Error(`ChatGPT API returned ${res.status}`);
+    }
+
+    const data = await res.json();
+    console.log(`[BlendConv] ChatGPT API response keys:`, Object.keys(data));
+
+    const title = data.title || 'Untitled';
+    const messages = [];
+
+    // ChatGPT returns a mapping object with message nodes
+    const mapping = data.mapping || {};
+    // Build ordered list by following the tree
+    const ordered = [];
+
+    function traverse(nodeId) {
+      const node = mapping[nodeId];
+      if (!node) return;
+      if (node.message) ordered.push(node.message);
+      if (node.children) {
+        for (const childId of node.children) {
+          traverse(childId);
+        }
+      }
+    }
+
+    // Find the root node (no parent)
+    for (const [id, node] of Object.entries(mapping)) {
+      if (!node.parent) {
+        traverse(id);
+        break;
+      }
+    }
+
+    for (const msg of ordered) {
+      const role = msg.author?.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+
+      // Extract text content from parts
+      const parts = msg.content?.parts || [];
+      const content = parts
+        .filter((p) => typeof p === 'string')
+        .join('\n')
+        .trim();
+
+      if (content.length > 0) {
+        messages.push({ role, content });
+      }
+    }
+
+    console.log(`[BlendConv] Parsed ${messages.length} messages for "${title}"`);
+    return { title, messages };
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  //  Fetch conversation LIST from sidebar/API
+  // ═══════════════════════════════════════════════════════════════
+
   /**
    * Fetch conversation list from Claude's internal API.
    * Falls back to DOM scraping if the API is inaccessible.
