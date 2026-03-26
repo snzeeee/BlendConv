@@ -3,7 +3,12 @@
   "name": "BlendConv",
   "version": "1.0.0",
   "description": "Capture and merge your AI conversations across ChatGPT and Claude.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*"
+  ],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

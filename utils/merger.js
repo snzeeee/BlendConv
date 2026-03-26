@@ -3,7 +3,7 @@
  * Generates a structured Markdown prompt from multiple conversations.
  */
 
-const Merger = {
+window.Merger = {
   /**
    * Merge multiple conversations into a single Markdown prompt.
    * @param {Array<Object>} conversations - Array of conversation objects
@@ -60,7 +60,6 @@ const Merger = {
         parts.push('');
       });
 
-      // Separator between conversations
       if (i < conversations.length - 1) {
         parts.push('---');
         parts.push('');
