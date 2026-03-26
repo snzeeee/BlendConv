@@ -48,6 +48,9 @@ window.BlendConvPanel = (function () {
       } else if (badge) {
         badge.remove();
       }
+    }).catch(() => {
+      // Service worker not ready yet, retry later
+      setTimeout(updateBadge, 2000);
     });
   }
 
@@ -329,8 +332,10 @@ window.BlendConvPanel = (function () {
       setTimeout(() => showToast(`${failed} failed`, true), 2200);
     }
 
-    // Notify background
-    chrome.runtime.sendMessage({ type: 'conversations_captured', count: captured }).catch(() => {});
+    // Notify background (may fail if service worker is restarting)
+    try {
+      chrome.runtime.sendMessage({ type: 'conversations_captured', count: captured });
+    } catch {};
   }
 
   // ─── Helpers ───
